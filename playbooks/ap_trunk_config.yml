@@ -1,0 +1,50 @@
+---
+- name: Configure Cisco AP trunk ports
+  hosts: switches
+  gather_facts: false
+  connection: ansible.netcommon.network_cli
+
+  vars:
+    trunk_native_vlan: 190
+    allowed_vlans:
+      - 64
+      - 90
+      - 190
+      - 250
+      - 480
+    ap_platform_regex: '(AIR|AP|AIRONET)'
+
+  tasks:
+    - name: Gather CDP neighbors
+      cisco.ios.ios_command:
+        commands: show cdp neighbors
+      register: cdp_raw
+
+    - name: Parse CDP neighbors
+      ansible.utils.cli_parse:
+        command: show cdp neighbors
+        output: "{{ cdp_raw.stdout[0] }}"
+        parser_type: textfsm
+      register: cdp_neighbors
+
+    - name: Build list of interfaces with AP neighbors
+      ansible.builtin.set_fact:
+        ap_interfaces: >-
+          {{ cdp_neighbors.parsed | selectattr('platform', 'search', ap_platform_regex) | map(attribute='local_port') | list | unique }}
+
+    - name: Configure AP ports as trunks
+      when: ap_interfaces | length > 0
+      cisco.ios.ios_config:
+        parents: "interface {{ item }}"
+        lines:
+          - description AP trunk port
+          - switchport trunk native vlan {{ trunk_native_vlan }}
+          - switchport trunk allowed vlan {{ allowed_vlans | join(',') }}
+          - switchport mode trunk
+      loop: "{{ ap_interfaces }}"
+
+    - name: Display configured interfaces
+      ansible.builtin.debug:
+        msg: "Configured trunk on interface {{ item }}"
+      loop: "{{ ap_interfaces }}"
+      when: ap_interfaces | length > 0
